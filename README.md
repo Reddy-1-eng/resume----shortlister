@@ -374,9 +374,3 @@ We welcome feature requests! Please:
 2. Describe the feature clearly
 3. Explain the use case
 4. Provide mockups if possible
-
----
-
-**Made with ❤️ by the Resume Shortlister Pro Team**
-
-*Transform your recruitment process with AI-powered resume analysis* 
