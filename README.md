@@ -375,6 +375,7 @@ We welcome feature requests! Please:
 3. Explain the use case
 4. Provide mockups if possible
 
+
 ---
 
 **Made with ❤️ by the Resume Shortlister Pro Team**
