@@ -276,59 +276,77 @@ def send_emails():
         if not candidates:
             return jsonify({'success': False, 'error': 'No candidates to email'})
         
-        # Filter candidates above threshold and with valid emails
+        # Filter candidates above threshold with REAL (non-fake) emails
         qualified_candidates = []
+        skipped = []
         for candidate in candidates:
-            if candidate.get('overall', 0) >= threshold:
-                email = candidate.get('email', '').strip()
-                if email and email != 'N/A' and '@' in email:
-                    qualified_candidates.append(candidate)
-                    logger.info(f"Qualified candidate: {candidate.get('name')} - {email} - Score: {candidate.get('overall')}")
-                else:
-                    logger.warning(f"Candidate {candidate.get('name')} has invalid email: {email}")
-        
+            email = str(candidate.get('email', '')).strip()
+            score = candidate.get('overall', 0)
+            is_fake = ('noemail.local' in email) or ('no-email' in email)
+            has_valid_email = email and email != 'N/A' and '@' in email and '.' in email.split('@')[-1] and not is_fake
+            if score >= threshold and has_valid_email:
+                qualified_candidates.append(candidate)
+                logger.info(f"Qualified: {candidate.get('name')} <{email}> score={score}")
+            else:
+                reason = f"score {score} < {threshold}" if score < threshold else ("fake/missing email" if is_fake or not has_valid_email else "unknown")
+                skipped.append({'name': candidate.get('name'), 'email': email, 'reason': reason})
+                logger.warning(f"Skipped {candidate.get('name')} <{email}>: {reason}")
+
         if not qualified_candidates:
-            return jsonify({'success': False, 'error': 'No candidates meet the threshold and have valid emails'})
-        
-        logger.info(f"Sending emails to {len(qualified_candidates)} qualified candidates")
-        
-        sent_count = 0
+            skip_info = "; ".join([f"{s['name']} ({s['reason']})" for s in skipped])
+            return jsonify({
+                'success': False,
+                'error': 'No candidates with valid emails above threshold.',
+                'skipped': skipped,
+                'detail': skip_info
+            })
+
+        logger.info(f"Sending to {len(qualified_candidates)} candidate(s)")
+
+        sent_count   = 0
         failed_count = 0
         failed_details = []
-        
+        sent_details   = []
+
         for candidate in qualified_candidates:
+            email = str(candidate.get('email', '')).strip()
+            name  = candidate.get('name', 'Candidate')
             try:
-                logger.info(f"Attempting to send email to {candidate['email']}")
+                logger.info(f"Sending to {name} <{email}> ...")
                 success = email_sender.send_email(
-                    recipient_email=candidate['email'],
-                    name=candidate['name'],
+                    recipient_email=email,
+                    name=name,
                     role=job_role,
-                    match_percentage=candidate['overall']
+                    match_percentage=float(candidate.get('overall', 0))
                 )
                 if success:
                     sent_count += 1
-                    logger.info(f"✅ Email sent successfully to {candidate['email']}")
+                    sent_details.append({'name': name, 'email': email})
+                    logger.info(f"Sent OK -> {email}")
                 else:
                     failed_count += 1
-                    failed_details.append({'email': candidate['email'], 'error': 'Unknown error'})
-                    logger.warning(f"❌ Failed to send email to {candidate['email']}")
+                    failed_details.append({'name': name, 'email': email, 'error': 'Delivery failed - check SMTP AUTH in M365 Admin'})
+                    logger.warning(f"Failed -> {email}")
             except Exception as e:
                 failed_count += 1
-                failed_details.append({'email': candidate['email'], 'error': str(e)})
-                logger.error(f"❌ Error sending email to {candidate['email']}: {e}")
-        
-        message = f'Successfully sent {sent_count} out of {len(qualified_candidates)} emails'
-        if failed_count > 0:
-            message += f' ({failed_count} failed)'
-        
-        logger.info(f"Email sending completed: {message}")
-        
+                failed_details.append({'name': name, 'email': email, 'error': str(e)})
+                logger.error(f"Exception sending to {email}: {e}")
+
+        if sent_count > 0:
+            message = f'Emails sent to: {", ".join([s["email"] for s in sent_details])}'
+        else:
+            message = f'No emails delivered. Errors: {[(f["email"],f["error"]) for f in failed_details]}'
+
+        logger.info(f"Done: {sent_count} sent, {failed_count} failed")
+
         return jsonify({
-            'success': True if sent_count > 0 else False,
+            'success': sent_count > 0,
             'message': message,
             'sent_count': sent_count,
+            'sent_to': sent_details,
             'total_attempted': len(qualified_candidates),
-            'failed_details': failed_details
+            'failed_details': failed_details,
+            'skipped': skipped
         })
     except Exception as e:
         logger.error(f"Email sending error: {e}")

@@ -17,6 +17,5 @@ nltk==3.8.1
 scikit-learn==1.4.0
 numpy==1.26.4
 scipy==1.12.0
-google-generativeai==0.3.2
 PyMuPDF==1.23.8
 pypdf==4.2.0

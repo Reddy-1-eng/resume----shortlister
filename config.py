@@ -97,11 +97,18 @@ class ProductionConfig(Config):
     DEBUG = False
     LOG_LEVEL = 'WARNING'
     SESSION_COOKIE_SECURE = True
-    
-    # Override with environment variables for production
-    SECRET_KEY = os.environ.get('SECRET_KEY')
-    if not SECRET_KEY:
-        raise ValueError("SECRET_KEY environment variable is required for production")
+
+    @staticmethod
+    def init_app(app):
+        """Validate required env vars at startup (not at import time)."""
+        secret = os.environ.get('SECRET_KEY')
+        if not secret:
+            raise ValueError(
+                "SECRET_KEY environment variable must be set in production. "
+                "Set it via: $env:SECRET_KEY='your-secret'"
+            )
+        app.config['SECRET_KEY'] = secret
+        Config.init_app(app)
 
 class TestingConfig(Config):
     """Testing configuration"""

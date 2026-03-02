@@ -1,26 +1,66 @@
-import google.generativeai as genai
+import requests
 from docx import Document
 import os
 import re
 import json
 import hashlib
 from datetime import datetime
-from scipy.stats import percentileofscore
 import math
 from email_sender import EmailSender
 import PyPDF2
+
+# Ollama configuration
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1")
+
+
+def _extract_outermost_json(text):
+    """
+    Robustly extract the first complete top-level JSON object from text.
+    Handles nested objects and arrays correctly by counting braces.
+    """
+    # Strip code-fence markers
+    text = re.sub(r'```[a-zA-Z]*', '', text).strip()
+
+    start = text.find('{')
+    if start == -1:
+        raise ValueError("No JSON object found in response")
+
+    depth = 0
+    in_string = False
+    escape_next = False
+
+    for i, ch in enumerate(text[start:], start=start):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+
+    raise ValueError("Incomplete JSON object in response (unbalanced braces)")
+
 
 # DataProcessor Class
 class DataProcessor:
     """Unified data processor for resume shortlisting system."""
 
     # --- 1. Utility/Helper Methods ---
-    def __init__(self, model_name="gemini-2.5-flash"):
-        self.model_name = model_name
+    def __init__(self, model_name=None):
+        self.model_name = model_name or OLLAMA_MODEL
+        self.ollama_url = OLLAMA_BASE_URL
         self.supported_extensions = {'.pdf', '.docx'}
-        # Configure Gemini API
-        genai.configure(api_key="AIzaSyDYcXNBn1XEZLAnD0eKJ2-1N2LTxzu14yE")
-        self.model = genai.GenerativeModel(model_name)
         self.email_sender = EmailSender(
             smtp_server="smtp.office365.com",
             smtp_port=587,
@@ -32,37 +72,54 @@ class DataProcessor:
         print(f"[{level}] {message}")
 
     def execute_ai_operation(self, prompt, operation_name, fallback_func=None, fallback_args=None):
+        """Send prompt to local Ollama LLaMA 3.1 and parse the JSON response."""
         try:
-            response = self.model.generate_content(prompt)
-            response_text = response.text
-            self.log(f"{operation_name} RAW response: {response_text}")  # Log raw output for debugging
-            # Robustly extract the first valid JSON object from the output
-            # Remove code block markers if present
-            response_text = re.sub(r'```[a-zA-Z]*', '', response_text)
-            # Find the first JSON object in the text
-            json_match = re.search(r'\{[\s\S]*?\}', response_text)
-            if json_match:
-                json_text = json_match.group(0)
-                parsed_data = json.loads(json_text)
-            else:
-                # Fallback: try to parse the whole response
-                parsed_data = json.loads(response_text)
+            payload = {
+                "model": self.model_name,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json"        # Constrain Ollama output to JSON
+            }
+            self.log(f"{operation_name}: Sending request to Ollama ({self.model_name}) ...")
+            response = requests.post(
+                f"{self.ollama_url}/api/generate",
+                json=payload,
+                timeout=180             # 3-minute timeout
+            )
+            response.raise_for_status()
+            ollama_data = response.json()
+            response_text = ollama_data.get("response", "")
+            self.log(f"{operation_name} RAW response: {response_text}")
+
+            # Use brace-counting extractor — correctly handles nested objects/arrays
+            json_text = _extract_outermost_json(response_text)
+            parsed_data = json.loads(json_text)
             self.log(f"{operation_name} PARSED data: {parsed_data}")
             return parsed_data
+
+        except requests.exceptions.ConnectionError:
+            self.log(f"Could not connect to Ollama at {self.ollama_url}. Is Ollama running?", "ERROR")
+            if fallback_func and fallback_args is not None:
+                return fallback_func(*fallback_args)
+            raise
+        except requests.exceptions.Timeout:
+            self.log(f"{operation_name}: Ollama request timed out. Using fallback.", "ERROR")
+            if fallback_func and fallback_args is not None:
+                return fallback_func(*fallback_args)
+            raise
         except Exception as e:
             self.log(f"Error during {operation_name}: {e}. Using fallback.")
-            if fallback_func and fallback_args:
-                self.log(f"Using fallback for {operation_name} due to error")
+            if fallback_func and fallback_args is not None:
                 return fallback_func(*fallback_args)
             else:
                 raise e
 
     def normalize_score(self, score):
-        return score * 100 if score <= 1.0 else score
+        return float(score * 100 if score <= 1.0 else score)
 
     def create_fallback_data(self, data_type="evaluation", **kwargs):
         if data_type == "evaluation":
-            basic_score = kwargs.get("basic_score", 0)
+            basic_score = float(kwargs.get("basic_score", 0))
             return {
                 "overall_score": basic_score,
                 "technical_skills_score": basic_score,
@@ -84,18 +141,13 @@ class DataProcessor:
 
     def parse_json_response(self, response_text, function_name="Unknown"):
         try:
-            json_start = response_text.find('{')
-            json_end = response_text.rfind('}') + 1
-            if json_start != -1 and json_end > json_start:
-                json_text = response_text[json_start:json_end]
-                parsed_data = json.loads(json_text)
-            else:
-                parsed_data = json.loads(response_text)
+            json_text = _extract_outermost_json(response_text)
+            parsed_data = json.loads(json_text)
             if isinstance(parsed_data, list):
                 parsed_data = parsed_data[0] if parsed_data else {}
             self.log(f"Successfully parsed {function_name} data: {parsed_data}")
             return parsed_data
-        except json.JSONDecodeError as e:
+        except Exception as e:
             self.log(f"JSON parsing failed for {function_name}: {e}")
             raise ValueError(f"JSON parsing failed for {function_name}")
 
@@ -164,50 +216,60 @@ class DataProcessor:
 
     # --- 3. AI Operations ---
     def compute_similarity(self, resume_text, job_description):
-        prompt = f'''
-        ### HR Resume Evaluation Specialist
-        You are an experienced HR professional with expertise in technical recruitment. Your task is to evaluate a candidate's resume against a specific job description and provide a comprehensive assessment.
-        ### Evaluation Criteria:
-        1. *Technical Skills Match* (40% weight):
-           - Evaluate how well the candidate's technical skills align with job requirements
-           - Consider programming languages, frameworks, tools, and technologies
-           - Assess depth and breadth of technical expertise
-        2. *Experience Relevance* (30% weight):
-           - Analyze work experience relevance to the role
-           - Consider industry experience, project complexity, and achievements
-           - Evaluate progression and growth in career
-        3. *Education & Certifications* (15% weight):
-           - Assess educational background alignment
-           - Consider relevant certifications and training
-           - Evaluate academic performance and achievements
-        4. *Soft Skills & Cultural Fit* (15% weight):
-           - Evaluate communication skills, leadership, teamwork
-           - Assess problem-solving abilities and adaptability
-           - Consider cultural alignment and values
-        ### Job Description:
-        {job_description}
-        ### Resume Content:
-        {resume_text}
-        ### Evaluation Instructions:
-        - Act as a senior HR professional with 10+ years of experience
-        - Be thorough but fair in your assessment
-        - Consider both explicit qualifications and transferable skills
-        - Look for potential and growth indicators
-        - Provide specific reasoning for your score
-        ### Output Format:
-        Respond ONLY with a single valid JSON object and NOTHING else. Do NOT include any code block markers, comments, or extra text. The output must be a single JSON object in the following format:
-        {{
-            "overall_score": <score between 0-100>,
-            "technical_skills_score": <score between 0-100>,
-            "experience_score": <score between 0-100>,
-            "education_score": <score between 0-100>,
-            "soft_skills_score": <score between 0-100>,
-            "detailed_feedback": "<detailed explanation of the evaluation>",
-            "strengths": ["<strength1>", "<strength2>", "<strength3>"],
-            "areas_for_improvement": ["<area1>", "<area2>", "<area3>"],
-            "recommendation": "<RECOMMEND/MAYBE/REJECT>"
-        }}
-        '''
+        prompt = f'''You are an expert HR recruiter and technical interviewer with 15+ years of hiring experience.
+Your task is to rigorously evaluate a candidate resume against a specific job description and return a precise, differentiated score.
+
+SCORING RULES (read carefully):
+- Scores must be floating-point numbers between 0.0 and 100.0 (e.g. 67.35, 81.20, 44.75)
+- Do NOT use round numbers like 70, 80, 90 — use decimals that reflect precise fit
+- Score 90+ only if the resume is an exceptional, near-perfect match
+- Score 70-89 for good matches with minor gaps
+- Score 50-69 for partial matches with notable gaps  
+- Score below 50 for poor matches
+
+SCORING CRITERIA:
+1. technical_skills_score (40% weight):
+   - Exact keyword/technology matches between resume and JD requirements
+   - Depth of expertise in listed skills (years, project complexity)
+   - Missing critical technologies heavily penalize this score
+
+2. experience_score (30% weight):
+   - Years of relevant experience vs JD requirement
+   - Relevance of past roles, projects, and industry
+   - Measurable achievements and impact
+
+3. education_score (15% weight):
+   - Degree level and field vs JD requirements
+   - Certifications, courses, or training relevant to the role
+   - Academic or professional credentials
+
+4. soft_skills_score (15% weight):
+   - Evidence of communication, leadership, collaboration
+   - Problem-solving examples in resume
+   - Cultural and role-fit indicators
+
+OVERALL SCORE = (technical * 0.40) + (experience * 0.30) + (education * 0.15) + (soft_skills * 0.15)
+Compute it yourself mathematically — do not guess.
+
+JOB DESCRIPTION:
+{job_description}
+
+RESUME:
+{resume_text}
+
+Respond ONLY with this exact JSON structure (no extra text, no markdown):
+{{
+    "overall_score": <computed weighted float, e.g. 67.35>,
+    "technical_skills_score": <float 0.0-100.0>,
+    "experience_score": <float 0.0-100.0>,
+    "education_score": <float 0.0-100.0>,
+    "soft_skills_score": <float 0.0-100.0>,
+    "detailed_feedback": "<2-3 sentence honest assessment explaining the score>",
+    "strengths": ["<specific strength from resume>", "<specific strength>", "<specific strength>"],
+    "areas_for_improvement": ["<specific gap vs JD>", "<specific gap>", "<specific gap>"],
+    "recommendation": "<RECOMMEND if overall>=75 | MAYBE if 50<=overall<75 | REJECT if overall<50>"
+}}'''
+
         def basic_word_overlap_fallback():
             job_words = set(job_description.lower().split())
             resume_words = set(resume_text.lower().split())
@@ -221,11 +283,10 @@ class DataProcessor:
                 elif match_ratio < 0.1:
                     basic_score = max(0, basic_score * 0.8)
                 if basic_score < 10:
-                    basic_score = 10
-            self.log(f"Fallback word overlap: {match_count}/{total_job_words} words matched, score: {basic_score:.1f}")
-            fallback_data = self.create_fallback_data("evaluation", basic_score=basic_score)
-            self.log(f"Fallback evaluation data: {fallback_data}")
-            return fallback_data
+                    basic_score = 10.0
+            self.log(f"Fallback word overlap: {match_count}/{total_job_words} words, score: {basic_score:.2f}")
+            return self.create_fallback_data("evaluation", basic_score=basic_score)
+
         return self.execute_ai_operation(
             prompt=prompt,
             operation_name="AI evaluation",
@@ -234,80 +295,73 @@ class DataProcessor:
         )
 
     def fallback_ner_extraction(self, text):
+        """Regex-based NER fallback when LLaMA is unavailable."""
         name_patterns = [
-            r"([A-Z][a-z]+\s[A-Z][a-z]+\s[A-Z][a-z]+)",
-            r"([A-Z][a-z]+\s[A-Z][a-z]+)",
-            r"([A-Z][A-Z]+\s[A-Z][A-Z]+)",
+            r"([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3})",   # Title case names
+            r"([A-Z][A-Z]+\s[A-Z][A-Z]+)",             # ALL CAPS names
         ]
         name = "N/A"
+        skip_words = {
+            'machine learning', 'data science', 'artificial intelligence',
+            'deep learning', 'computer science', 'software engineer',
+            'business analyst', 'project manager', 'curriculum vitae',
+            'resume', 'objective', 'summary', 'experience', 'education',
+            'skills', 'languages', 'contact', 'references'
+        }
         for pattern in name_patterns:
-            name_match = re.search(pattern, text)
-            if name_match:
-                name = name_match.group(1)
-                if name.lower() not in ['machine learning', 'data science', 'artificial intelligence', 'deep learning']:
+            for match in re.finditer(pattern, text):
+                candidate = match.group(1)
+                if candidate.lower() not in skip_words and len(candidate) > 4:
+                    name = candidate
                     break
-        # If still no name, use first non-empty line
+            if name != "N/A":
+                break
+
         if name == "N/A":
             lines = [line.strip() for line in text.splitlines() if line.strip()]
             if lines:
-                name = lines[0]
-        email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text)
-        phone_match = re.search(r"(\+?\d[\d\s\-]{7,14}\d)", text)
+                name = lines[0][:60]  # First line, max 60 chars
+
+        email_match = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", text)
+        phone_match = re.search(r"(\+?\d[\d\s\-\(\)]{7,15}\d)", text)
         email = email_match.group(0) if email_match else None
+
         if not email:
-            # Generate a pseudo-unique email using a hash of name+text
             base = (name or "N/A") + text[:100]
-            pseudo_email = f"{hashlib.md5(base.encode()).hexdigest()[:8]}@noemail.local"
-            email = pseudo_email
-        self.log(f"[FALLBACK NER] Extracted name: {name}, email: {email}")
-        return self.create_fallback_data("ner", 
+            email = f"{hashlib.md5(base.encode()).hexdigest()[:8]}@noemail.local"
+
+        self.log(f"[FALLBACK NER] name: {name}, email: {email}")
+        return self.create_fallback_data("ner",
             name=name,
             email=email,
-            phone=phone_match.group(0) if phone_match else "N/A"
+            phone=phone_match.group(0).strip() if phone_match else "N/A"
         )
 
     def extract_ner(self, text, role=None):
-        job_key = self.get_job_info(title=role, action="key") if role else None
-        jd_context = self.get_job_info(role=job_key, action="load") if job_key else {}
-        prompt = f'''
-        ### Resume Entity Extractor
-        You are an advanced Named Entity Recognition specialist trained specifically for resume/CV parsing. Extract personal identifiers with maximum precision.
-        ### Target Entities:
-        1. Full Name
-        2. Email Address
-        3. Phone Number
-        ### Extraction Guidelines:
-        #### Name Extraction (Highest Priority):
-        - Look for names in header sections, "About Me", or after phrases like "Name:", "I am", etc.
-        - Extract complete names (first, middle, last) with proper capitalization
-        - Focus on personal names only, not organizations, degrees, or locations
-        - Check for names in signature blocks or contact information sections
-        - Ignore common resume headings that might be misidentified as names
-        - DO NOT return organization names, university names, or location names as person names
-        - If multiple name candidates exist, prioritize those in header/contact sections
-        #### Email Extraction:
-        - Extract standard email format (username@domain.tld)
-        - Verify email has proper domain structure
-        - Ignore emails that appear to be examples or templates
-        - Look for emails near contact information sections
-        #### Phone Extraction:
-        - Identify phone numbers in various formats (international, local)
-        - Handle numbers with different separators (spaces, dots, dashes)
-        - Recognize numbers with country codes and extensions
-        - Look for nearby context words like "Phone:", "Mobile:", "Tel:", etc.
-        ### Verification Steps:
-        1. Verify that extracted names are actual person names (not companies, locations, or section headings)
-        2. Confirm that emails follow proper format
-        3. Ensure phone numbers have sufficient digits to be valid
-        4. Apply additional validation against known invalid patterns
-        ### Job Description Context (for better extraction):
-        {jd_context}
-        ### Resume Text:
-        {text}
-        ### Output Format:
-        Respond ONLY with a single valid JSON object and NOTHING else. Do NOT include any code block markers, comments, or extra text. The output must be a single JSON object in the following format:
-        {{"name": "<full name>", "email": "<email address>", "phone": "<phone number>"}}
-        '''
+        """Extract name, email, and phone from resume text using LLaMA 3.1."""
+        # Limit context to first 3000 chars — header area has the contact info
+        context_text = text[:3000]
+
+        prompt = f'''You are a precise resume parser. Extract ONLY these three fields from the resume text below.
+
+EXTRACTION RULES:
+- name: The candidate's FULL PERSONAL NAME (first + last, possibly middle). 
+  * It appears at the TOP of the resume, often the largest text or first line.
+  * It is a PERSON'S name — NOT a company, university, degree, city, or job title.
+  * Examples of valid names: "Rahul Sharma", "John Michael Smith", "Priya Reddy"
+  * If truly not found, use "N/A"
+- email: A valid email address (format: user@domain.tld).
+  * Look near phone/contact sections. Take the FIRST real email found.
+  * If not found, use "N/A"
+- phone: A phone/mobile number (digits, may have +, spaces, dashes).
+  * If not found, use "N/A"
+
+RESUME TEXT (first section — most likely to contain contact info):
+{context_text}
+
+Respond ONLY with this exact JSON (no extra text, no markdown fences):
+{{"name": "<full name or N/A>", "email": "<email or N/A>", "phone": "<phone or N/A>"}}'''
+
         return self.execute_ai_operation(
             prompt=prompt,
             operation_name="NER extraction",
@@ -316,15 +370,21 @@ class DataProcessor:
         )
 
     # --- 4. Result Construction ---
-    def build_result_dict(self, ner_data, evaluation_data, overall_score, technical_score, 
-                         experience_score, education_score, soft_skills_score, 
+    def build_result_dict(self, ner_data, evaluation_data, overall_score, technical_score,
+                         experience_score, education_score, soft_skills_score,
                          recommendation, message_suffix=""):
         overall_score = self.normalize_score(overall_score)
         technical_score = self.normalize_score(technical_score)
         experience_score = self.normalize_score(experience_score)
         education_score = self.normalize_score(education_score)
         soft_skills_score = self.normalize_score(soft_skills_score)
-        result_str = f"✅ Processed {ner_data['name']} ({ner_data['email']}) - Overall: {round(overall_score, 1)}% | Tech: {round(technical_score, 1)}% | Exp: {round(experience_score, 1)}% | Edu: {round(education_score, 1)}% | Soft: {round(soft_skills_score, 1)}% | Rec: {recommendation}{message_suffix}"
+
+        result_str = (
+            f"✅ Processed {ner_data['name']} ({ner_data['email']}) - "
+            f"Overall: {overall_score:.2f}% | Tech: {technical_score:.2f}% | "
+            f"Exp: {experience_score:.2f}% | Edu: {education_score:.2f}% | "
+            f"Soft: {soft_skills_score:.2f}% | Rec: {recommendation}{message_suffix}"
+        )
         return {
             "result_str": result_str,
             "overall_score": overall_score,
@@ -340,11 +400,11 @@ class DataProcessor:
     def create_error_result(self, error_message, error_type="General"):
         return {
             "result_str": f"❌ {error_type} error: {error_message}",
-            "overall_score": 0,
-            "technical_score": 0,
-            "experience_score": 0,
-            "education_score": 0,
-            "soft_skills_score": 0,
+            "overall_score": 0.0,
+            "technical_score": 0.0,
+            "experience_score": 0.0,
+            "education_score": 0.0,
+            "soft_skills_score": 0.0,
             "recommendation": "REJECT",
             "ner_data": {"name": "N/A", "email": "N/A", "phone": "N/A"},
             "evaluation_data": {}
@@ -366,26 +426,25 @@ class DataProcessor:
                 results_dir = os.path.join(os.getcwd(), "results")
                 os.makedirs(results_dir, exist_ok=True)
                 excel_file = os.path.join(results_dir, "ranked_resume_results.xlsx")
-                # Build DataFrame directly from results_data
                 records = []
                 for result in kwargs["results_data"]:
                     if isinstance(result, dict) and "result_str" in result:
                         candidate_name = result.get("ner_data", {}).get("name", "N/A")
                         email = result.get("ner_data", {}).get("email", "N/A")
-                        overall_score = result.get("overall_score", 0)
+                        overall_score = float(result.get("overall_score", 0))
                         records.append({
                             'Timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             'Job Role': kwargs["role"],
                             'Threshold': kwargs["threshold"],
                             'Candidate Name': candidate_name,
                             'Email': email,
-                            'Overall Score (%)': round(overall_score, 1),
-                            'Technical Skills (%)': round(result.get("technical_score", 0), 1),
-                            'Experience (%)': round(result.get("experience_score", 0), 1),
-                            'Education (%)': round(result.get("education_score", 0), 1),
-                            'Soft Skills (%)': round(result.get("soft_skills_score", 0), 1),
+                            'Overall Score (%)': overall_score,
+                            'Technical Skills (%)': float(result.get("technical_score", 0)),
+                            'Experience (%)': float(result.get("experience_score", 0)),
+                            'Education (%)': float(result.get("education_score", 0)),
+                            'Soft Skills (%)': float(result.get("soft_skills_score", 0)),
                             'Recommendation': result.get("recommendation", "MAYBE"),
-                            'Status': "Ready for Email" if (overall_score >= kwargs["threshold"] and email != "N/A") else "Below Threshold",
+                            'Status': "Ready for Email" if (overall_score >= kwargs["threshold"] and email not in ("N/A", "")) else "Below Threshold",
                             'Detailed Feedback': result.get("evaluation_data", {}).get("detailed_feedback", "N/A"),
                             'Strengths': "; ".join(result.get("evaluation_data", {}).get("strengths", [])),
                             'Areas for Improvement': "; ".join(result.get("evaluation_data", {}).get("areas_for_improvement", [])),
@@ -398,11 +457,11 @@ class DataProcessor:
                             'Threshold': kwargs["threshold"],
                             'Candidate Name': 'N/A',
                             'Email': 'N/A',
-                            'Overall Score (%)': 0,
-                            'Technical Skills (%)': 0,
-                            'Experience (%)': 0,
-                            'Education (%)': 0,
-                            'Soft Skills (%)': 0,
+                            'Overall Score (%)': 0.0,
+                            'Technical Skills (%)': 0.0,
+                            'Experience (%)': 0.0,
+                            'Education (%)': 0.0,
+                            'Soft Skills (%)': 0.0,
                             'Recommendation': 'REJECT',
                             'Status': 'Error',
                             'Detailed Feedback': 'N/A',
@@ -411,18 +470,17 @@ class DataProcessor:
                             'Full Result': str(result) if isinstance(result, str) else 'Error processing'
                         })
                 df = pd.DataFrame(records)
-                # Calculate percentiles efficiently using pandas
+                # Percentile as precise float (0.0–100.0)
                 if not df.empty:
                     df['Percentile'] = df['Overall Score (%)'].rank(pct=True, method='max') * 100
                 else:
-                    df['Percentile'] = 0
-                # Add Rank
+                    df['Percentile'] = 0.0
                 df = df.sort_values('Overall Score (%)', ascending=False).reset_index(drop=True)
                 df['Rank'] = range(1, len(df) + 1)
-                # Save to Excel
                 df.to_excel(excel_file, index=False)
                 self.log(f"Ranked results saved to Excel: {excel_file}")
                 return excel_file
+
             elif action == "load" and "role" in kwargs:
                 results_dir = os.path.join(os.getcwd(), "results")
                 if not os.path.exists(results_dir):
@@ -460,7 +518,6 @@ class DataProcessor:
                         except Exception as e:
                             self.log(f"Error reading Excel file {filename}: {e}")
                             continue
-                # Deduplicate by (name, email)
                 seen_keys = set()
                 deduped_results = []
                 for result in all_results:
@@ -472,6 +529,7 @@ class DataProcessor:
                         seen_keys.add(key)
                 self.log(f"Deduplicated results: {len(deduped_results)} out of {len(all_results)}")
                 return deduped_results
+
             elif action == "rank" and "all_results" in kwargs:
                 top_n = kwargs.get("top_n", 5)
                 sorted_results = sorted(kwargs["all_results"], key=lambda x: x.get('overall_score', 0), reverse=True)
@@ -479,7 +537,6 @@ class DataProcessor:
                 for i, result in enumerate(top_results, 1):
                     result['global_rank'] = i
                     result['total_candidates'] = len(kwargs["all_results"])
-                self.log(f"Top {len(top_results)} candidates selected from {len(kwargs['all_results'])} total candidates")
                 return top_results
             return []
         except Exception as e:
@@ -488,49 +545,48 @@ class DataProcessor:
 
     # --- 6. Main Orchestration ---
     def process_uploaded_resume(self, file_path, role, threshold):
+        full_text = ""
         try:
-            self.log(f"Starting process_uploaded_resume for file: {file_path}, role: {role}, threshold: {threshold}")
-            
-            # Validate file exists
+            self.log(f"Starting resume processing: {file_path}, role: {role}, threshold: {threshold}")
+
             if not os.path.exists(file_path):
-                return self.create_error_result("File not found. Please ensure the file was uploaded correctly.", "File Not Found")
-            
+                return self.create_error_result("File not found.", "File Not Found")
+
             blocks = self.extract_file_content(file_path)
             if not blocks:
                 return self.create_error_result("No content could be extracted from the file.", "Content Extraction")
-            self.log(f"Extracted {len(blocks)} blocks from file.")
+
             full_text = " ".join(blocks)
-            self.log(f"Full text length: {len(full_text)}")
-            
-            # Simplified job description loading
+            self.log(f"Extracted {len(blocks)} blocks, {len(full_text)} chars")
+
             jd_data = self.get_job_info(role=role, action="load")
             if not jd_data:
-                return self.create_error_result(f"Unknown or missing job title: {role}. Please check the available job roles.", "Job Title")
+                return self.create_error_result(f"Unknown job role: {role}", "Job Title")
             jd_text = self.extract_job_description_text(jd_data)
-            
+
+            # === NER first (fast) ===
+            ner_data = self.extract_ner(full_text, role=role)
+            self.log(f"NER result: {ner_data}")
+
+            # === Scoring (slower, LLaMA 3.1) ===
             evaluation_data = self.compute_similarity(full_text, jd_text)
-            self.log(f"AI evaluation data: {evaluation_data}")
+            self.log(f"Evaluation result: {evaluation_data}")
+
             scores = {
-                "overall": evaluation_data.get("overall_score", 0),
-                "technical": evaluation_data.get("technical_skills_score", 0),
-                "experience": evaluation_data.get("experience_score", 0),
-                "education": evaluation_data.get("education_score", 0),
-                "soft_skills": evaluation_data.get("soft_skills_score", 0)
+                "overall": float(evaluation_data.get("overall_score", 0)),
+                "technical": float(evaluation_data.get("technical_skills_score", 0)),
+                "experience": float(evaluation_data.get("experience_score", 0)),
+                "education": float(evaluation_data.get("education_score", 0)),
+                "soft_skills": float(evaluation_data.get("soft_skills_score", 0))
             }
             recommendation = evaluation_data.get("recommendation", "MAYBE")
-            self.log(f"Raw scores: {scores}")
-            
-            ner_data = self.extract_ner(full_text, role=role)
-            self.log(f"NER data: {ner_data}")
-            
-            if scores["overall"] >= threshold and ner_data["email"] != "N/A":
+
+            if scores["overall"] >= threshold and ner_data.get("email") not in (None, "N/A", ""):
                 message_suffix = " (Ready to send email)"
-                # Email sending is now handled in batch via /send-emails endpoint in app.py
             else:
-                self.log(f"Below threshold or no valid email. Score: {scores['overall']}, Email: {ner_data['email']}")
                 message_suffix = " (Below threshold or no valid email)"
-            
-            result_data = self.build_result_dict(
+
+            return self.build_result_dict(
                 ner_data=ner_data,
                 evaluation_data=evaluation_data,
                 overall_score=scores["overall"],
@@ -541,21 +597,17 @@ class DataProcessor:
                 recommendation=recommendation,
                 message_suffix=message_suffix
             )
-            self.log(f"Returning detailed result: {result_data['result_str']}")
-            return result_data
+
         except FileNotFoundError:
-            return self.create_error_result("File not found. Please ensure the file was uploaded correctly.", "File Not Found")
+            return self.create_error_result("File not found.", "File Not Found")
         except PermissionError:
-            return self.create_error_result("Permission denied accessing the file.", "Permission Denied")
+            return self.create_error_result("Permission denied accessing the file.", "Permission")
         except Exception as e:
-            # Check if this is a Gemini API connection error that should have been handled by fallback
-            if "Failed to connect to Gemini" in str(e) or "Gemini" in str(e):
-                self.log(f"Gemini API connection error but fallback should have handled this: {str(e)}")
-            # Try to create a basic fallback result
+            self.log(f"Processing error: {e}")
             try:
-                fallback_evaluation = self.create_fallback_data("evaluation", basic_score=50)
-                fallback_ner = self.fallback_ner_extraction(full_text)
-                result_data = self.build_result_dict(
+                fallback_evaluation = self.create_fallback_data("evaluation", basic_score=50.0)
+                fallback_ner = self.fallback_ner_extraction(full_text) if full_text else {"name": "N/A", "email": "N/A", "phone": "N/A"}
+                return self.build_result_dict(
                     ner_data=fallback_ner,
                     evaluation_data=fallback_evaluation,
                     overall_score=fallback_evaluation["overall_score"],
@@ -566,54 +618,42 @@ class DataProcessor:
                     recommendation=fallback_evaluation["recommendation"],
                     message_suffix=" (Fallback processing)"
                 )
-                self.log(f"Created fallback result: {result_data['result_str']}")
-                return result_data
-            except Exception as fallback_error:
-                self.log(f"Fallback also failed: {fallback_error}")
-                return self.create_error_result(f"AI and fallback processing failed: {str(e)}", "Processing Error")
+            except Exception as fe:
+                self.log(f"Fallback also failed: {fe}")
+                return self.create_error_result(f"Processing failed: {str(e)}", "Processing Error")
+
 
 # --- 7. Legacy/Wrapper Functions ---
 
 def create_fallback_data(data_type="evaluation", **kwargs):
-    processor = DataProcessor()
-    return processor.create_fallback_data(data_type, **kwargs)
+    return DataProcessor().create_fallback_data(data_type, **kwargs)
 
 def parse_json_response(response_text, function_name="Unknown"):
-    processor = DataProcessor()
-    return processor.parse_json_response(response_text, function_name)
+    return DataProcessor().parse_json_response(response_text, function_name)
 
 def manage_excel_data(results_data=None, role=None, threshold=None, action="save"):
-    processor = DataProcessor()
-    return processor.manage_data(action=action, results_data=results_data, role=role, threshold=threshold)
+    return DataProcessor().manage_data(action=action, results_data=results_data, role=role, threshold=threshold)
 
 def manage_historical_data(role=None, all_results=None, action="load", top_n=5):
-    processor = DataProcessor()
-    return processor.manage_data(action=action, role=role, all_results=all_results, top_n=top_n)
+    return DataProcessor().manage_data(action=action, role=role, all_results=all_results, top_n=top_n)
 
 def load_job_data(filename="job_descriptions/all_jobs.json"):
-    processor = DataProcessor()
-    return processor.load_job_data(filename)
+    return DataProcessor().load_job_data(filename)
 
 def get_job_info(role=None, title=None, action="load"):
-    processor = DataProcessor()
-    return processor.get_job_info(role=role, title=title, action=action)
+    return DataProcessor().get_job_info(role=role, title=title, action=action)
 
 def extract_file_content(file_path):
-    processor = DataProcessor()
-    return processor.extract_file_content(file_path)
+    return DataProcessor().extract_file_content(file_path)
 
-def compute_similarity(resume_text, job_description, model_name="gemini-2.5-flash"):
-    processor = DataProcessor(model_name)
-    return processor.compute_similarity(resume_text, job_description)
+def compute_similarity(resume_text, job_description, model_name=None):
+    return DataProcessor(model_name).compute_similarity(resume_text, job_description)
 
-def extract_ner(text, model_name="gemini-2.5-flash", role=None):
-    processor = DataProcessor(model_name)
-    return processor.extract_ner(text, role)
+def extract_ner(text, model_name=None, role=None):
+    return DataProcessor(model_name).extract_ner(text, role)
 
 def create_error_result(error_message, error_type="General"):
-    processor = DataProcessor()
-    return processor.create_error_result(error_message, error_type)
+    return DataProcessor().create_error_result(error_message, error_type)
 
-def process_uploaded_resume(file_path, role, threshold, model_name="gemini-2.5-flash"):
-    processor = DataProcessor(model_name)
-    return processor.process_uploaded_resume(file_path, role, threshold)
+def process_uploaded_resume(file_path, role, threshold, model_name=None):
+    return DataProcessor(model_name).process_uploaded_resume(file_path, role, threshold)
