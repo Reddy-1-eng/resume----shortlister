@@ -380,4 +380,4 @@ We welcome feature requests! Please:
 
 **Made with ❤️ by the Resume Shortlister Pro Team**
 
-*Transform your recruitment process with AI-powered resume analysis* 
+*Transform your recruitment process with AI-powered resume analysis*
