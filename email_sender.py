@@ -1,5 +1,4 @@
 import smtplib
-import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
@@ -40,30 +39,15 @@ class EmailSender:
         msg.attach(MIMEText(body, "plain", "utf-8"))
         return msg
 
-    def _try_send_ssl(self, recipient_email, msg):
-        """
-        Attempt delivery via SMTP_SSL on port 465.
-        This is the most reliable method for Office 365.
-        """
-        context = ssl.create_default_context()
-        logger.info(f"Trying SSL (port 465) to {self.smtp_server}...")
-        with smtplib.SMTP_SSL(self.smtp_server, 465, context=context, timeout=30) as server:
-            server.login(self.sender_email, self.sender_password)
-            refused = server.sendmail(self.sender_email, recipient_email, msg.as_string())
-            if refused:
-                logger.warning(f"Recipient refused: {refused}")
-                return False
-            return True
-
     def _try_send_starttls(self, recipient_email, msg):
         """
         Attempt delivery via STARTTLS on port 587.
-        Fallback when port 465 is unavailable.
+        This is the most reliable method for Office 365 and Gmail.
         """
         logger.info(f"Trying STARTTLS (port 587) to {self.smtp_server}...")
         server = None
         try:
-            server = smtplib.SMTP(self.smtp_server, 587, timeout=30)
+            server = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30)
             server.ehlo()
             server.starttls()
             server.ehlo()
@@ -83,7 +67,7 @@ class EmailSender:
     def send_email(self, recipient_email, name, role, match_percentage):
         """
         Send a shortlist notification email.
-        Tries SSL/465 first, then STARTTLS/587.
+        Uses STARTTLS/587 for Office 365 compatibility.
         Returns True on success, False on failure.
         """
         if not recipient_email or str(recipient_email).strip() in ("", "N/A"):
@@ -96,28 +80,7 @@ class EmailSender:
 
         msg = self._build_message(recipient_email, name, role, match_percentage)
 
-        # --- Attempt 1: SSL on port 465 ---
-        try:
-            success = self._try_send_ssl(recipient_email, msg)
-            if success:
-                logger.info(f"✅ Email delivered (SSL/465) to {recipient_email}")
-                return True
-        except smtplib.SMTPAuthenticationError as auth_err:
-            logger.error(
-                f"❌ SMTP Authentication failed on SSL/465: {auth_err}\n"
-                "SOLUTION:\n"
-                "  For Gmail: Use App Password (not regular password)\n"
-                "    1. Enable 2FA: https://myaccount.google.com/security\n"
-                "    2. Generate App Password: https://myaccount.google.com/apppasswords\n"
-                "    3. Use the 16-character password in SENDER_PASSWORD\n"
-                "  For Office 365: Enable SMTP AUTH in Microsoft 365 Admin Centre\n"
-                "    Users → Active Users → select mailbox → Mail → 'Manage email apps' → enable 'Authenticated SMTP'"
-            )
-            return False
-        except Exception as e1:
-            logger.warning(f"SSL/465 attempt failed ({type(e1).__name__}: {e1}), trying STARTTLS/587...")
-
-        # --- Attempt 2: STARTTLS on port 587 ---
+        # --- Use STARTTLS on port 587 (most reliable) ---
         try:
             success = self._try_send_starttls(recipient_email, msg)
             if success:
@@ -126,14 +89,14 @@ class EmailSender:
             return False
         except smtplib.SMTPAuthenticationError as auth_err:
             logger.error(
-                f"❌ SMTP Authentication failed on STARTTLS/587: {auth_err}\n"
+                f"❌ SMTP Authentication failed: {auth_err}\n"
                 "SOLUTION:\n"
                 "  For Gmail: Use App Password (not regular password)\n"
                 "    1. Enable 2FA: https://myaccount.google.com/security\n"
                 "    2. Generate App Password: https://myaccount.google.com/apppasswords\n"
                 "    3. Use the 16-character password in SENDER_PASSWORD\n"
-                "  For Office 365: Enable SMTP AUTH in Microsoft 365 Admin Centre or use App Password\n"
-                "  Check your email provider's SMTP settings and authentication requirements"
+                "  For Office 365: Enable SMTP AUTH in Microsoft 365 Admin Centre\n"
+                "    Users → Active Users → select mailbox → Mail → 'Manage email apps' → enable 'Authenticated SMTP'"
             )
             return False
         except smtplib.SMTPRecipientsRefused as e:
