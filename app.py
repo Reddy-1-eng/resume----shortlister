@@ -23,14 +23,11 @@ except Exception as e:
 # Ensure directories exist early
 os.makedirs('logs', exist_ok=True)
 
-# Import core functionality if available
-try:
-    from core import process_uploaded_resume  # AI resume processing logic
-    CORE_AVAILABLE = True
-except Exception as e:
-    CORE_AVAILABLE = False
-    print("Warning: core.py not found or failed to import. Using mock processing.")
-    print("Import error details:", e)
+# Import core functionality - REQUIRED for Llama model processing
+from core import process_uploaded_resume  # AI resume processing logic using Llama 3.1
+CORE_AVAILABLE = True
+logger_temp = logging.getLogger(__name__)
+logger_temp.info("✅ Core functionality (Llama 3.1) imported successfully")
 
 # Configure logging
 logging.basicConfig(
@@ -93,50 +90,6 @@ def get_job_descriptions():
         logger.error(f"Error loading job descriptions: {e}")
         return {}
 
-def mock_process_resume(file_path, job_role):
-    """Mock resume processing for testing"""
-    import random
-    import time
-    
-    # Simulate processing time
-    time.sleep(0.5)
-    
-    # Generate mock scores
-    overall = random.randint(60, 95)
-    scores = {
-        'overall': overall,
-        'tech': random.randint(50, 90),
-        'exp': random.randint(40, 85),
-        'edu': random.randint(60, 95),
-        'soft': random.randint(70, 95),
-        'rec': random.randint(80, 100)
-    }
-    
-    # Extract name from filename
-    name = os.path.splitext(os.path.basename(file_path))[0]
-    name = name.replace('_', ' ').replace('-', ' ').title()
-    
-    # Generate mock email
-    email = f"{name.lower().replace(' ', '.')}@example.com"
-    
-    return {
-        'name': name,
-        'email': email,
-        'overall_score': overall,
-        'technical_score': scores['tech'],
-        'experience_score': scores['exp'],
-        'education_score': scores['edu'],
-        'soft_skills_score': scores['soft'],
-        'recommendation': 'RECOMMEND' if overall >= 75 else 'MAYBE' if overall >= 50 else 'REJECT',
-        'ner_data': {
-            'name': name,
-            'email': email,
-            'phone': 'N/A'
-        },
-        'scores': scores,
-        'file_path': file_path
-    }
-
 @app.route('/')
 def index():
     """Main page"""
@@ -144,12 +97,12 @@ def index():
         job_descriptions = get_job_descriptions()
         return render_template('index.html', 
                              job_descriptions=job_descriptions,
-                             core_available=CORE_AVAILABLE)
+                             core_available=True)
     except Exception as e:
         logger.error(f"Error rendering index: {e}")
         return render_template('index.html', 
                              job_descriptions={},
-                             core_available=False)
+                             core_available=True)
 
 @app.route('/upload', methods=['POST'])
 def upload_files():
@@ -201,40 +154,23 @@ def process_resumes():
                 logger.warning(f"File not found: {file_path}")
                 continue
             try:
-                if CORE_AVAILABLE:
-                    result = process_uploaded_resume(file_path, job_role, threshold)
-                    logger.info("REAL process_uploaded_resume called")
-                else:
-                    result = mock_process_resume(file_path, job_role)
-                    logger.info("MOCK process_resume called")
+                # Use Llama 3.1 model for resume processing
+                result = process_uploaded_resume(file_path, job_role, threshold)
+                logger.info("✅ Llama 3.1 model processing completed")
                 
                 # Extract scores from result
-                if CORE_AVAILABLE:
-                    overall = float(result.get('overall_score', 0))
-                    candidate = {
-                        'name': result.get('ner_data', {}).get('name', 'Unknown'),
-                        'email': result.get('ner_data', {}).get('email', ''),
-                        'overall': overall,
-                        'tech': float(result.get('technical_score', 0)),
-                        'exp': float(result.get('experience_score', 0)),
-                        'edu': float(result.get('education_score', 0)),
-                        'soft': float(result.get('soft_skills_score', 0)),
-                        'rec': result.get('recommendation', 'MAYBE'),
-                        'file_path': file_path
-                    }
-                else:
-                    overall = result['scores']['overall']
-                    candidate = {
-                        'name': result['name'],
-                        'email': result['email'],
-                        'overall': overall,
-                        'tech': result['scores']['tech'],
-                        'exp': result['scores']['exp'],
-                        'edu': result['scores']['edu'],
-                        'soft': result['scores']['soft'],
-                        'rec': result.get('recommendation', 'MAYBE'),
-                        'file_path': file_path
-                    }
+                overall = float(result.get('overall_score', 0))
+                candidate = {
+                    'name': result.get('ner_data', {}).get('name', 'Unknown'),
+                    'email': result.get('ner_data', {}).get('email', ''),
+                    'overall': overall,
+                    'tech': float(result.get('technical_score', 0)),
+                    'exp': float(result.get('experience_score', 0)),
+                    'edu': float(result.get('education_score', 0)),
+                    'soft': float(result.get('soft_skills_score', 0)),
+                    'rec': result.get('recommendation', 'MAYBE'),
+                    'file_path': file_path
+                }
                 candidates.append(candidate)
             except Exception as e:
                 logger.error(f"Error processing {filename}: {e}")
@@ -488,7 +424,7 @@ if __name__ == '__main__':
     print(f"📁 Upload folder: {os.path.abspath(UPLOAD_FOLDER)}")
     print(f"📊 Results folder: {os.path.abspath('results')}")
     print(f"📝 Logs folder: {os.path.abspath('logs')}")
-    print(f"🔧 Core processing: {'Available' if CORE_AVAILABLE else 'Mock mode'}")
+    print(f"🤖 AI Model: Llama 3.1 (via Ollama at http://localhost:11434)")
     print("=" * 60)
     
     app.run(debug=True, host='0.0.0.0', port=5000, threaded=True) 
