@@ -62,10 +62,10 @@ class DataProcessor:
         self.ollama_url = OLLAMA_BASE_URL
         self.supported_extensions = {'.pdf', '.docx'}
         self.email_sender = EmailSender(
-            smtp_server="smtp.gmail.com",
+            smtp_server="smtp.office365.com",
             smtp_port=587,
-            sender_email="lokeshboggula06@gmail.com",
-            sender_password="Lokesh@2006"
+            sender_email="bbaweekdayoutgatepermission@woxsen.edu.in",
+            sender_password="Bbaoutgate@2024"
         )
 
     def log(self, message, level="DEBUG"):
