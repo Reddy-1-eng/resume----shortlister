@@ -15,9 +15,9 @@ class EmailSender:
     """
 
     def __init__(self, smtp_server, smtp_port, sender_email, sender_password):
-        self.smtp_server   = smtp_server
-        self.smtp_port     = smtp_port
-        self.sender_email  = sender_email
+        self.smtp_server = smtp_server
+        self.smtp_port = smtp_port
+        self.sender_email = sender_email
         self.sender_password = sender_password
 
     def _build_message(self, recipient_email, name, role, match_percentage):
@@ -34,41 +34,15 @@ class EmailSender:
             f"Woxsen University"
         )
         msg = MIMEMultipart()
-        msg["From"]    = self.sender_email
-        msg["To"]      = recipient_email
+        msg["From"] = self.sender_email
+        msg["To"] = recipient_email
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "plain", "utf-8"))
         return msg
 
-    def _try_send_starttls(self, recipient_email, msg):
-        """
-        Attempt delivery via STARTTLS on port 587.
-        This is the most reliable method for Office 365 and Gmail.
-        """
-        logger.info(f"Trying STARTTLS (port 587) to {self.smtp_server}...")
-        server = None
-        try:
-            server = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30)
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(self.sender_email, self.sender_password)
-            refused = server.sendmail(self.sender_email, recipient_email, msg.as_string())
-            if refused:
-                logger.warning(f"Recipient refused: {refused}")
-                return False
-            return True
-        finally:
-            if server:
-                try:
-                    server.quit()
-                except Exception:
-                    pass
-
     def send_email(self, recipient_email, name, role, match_percentage):
         """
-        Send a shortlist notification email.
-        Uses STARTTLS/587 for Office 365 compatibility.
+        Send a shortlist notification email using SMTP.
         Returns True on success, False on failure.
         """
         if not recipient_email or str(recipient_email).strip() in ("", "N/A"):
@@ -76,42 +50,48 @@ class EmailSender:
             return False
 
         recipient_email = str(recipient_email).strip()
-        logger.info(f"Sending shortlist email to: {recipient_email} (role={role}, score={match_percentage:.2f}%)")
-        logger.info(f"Using SMTP: {self.smtp_server}:{self.smtp_port} from {self.sender_email}")
+        logger.info(f"Sending email to: {recipient_email} (role={role}, score={match_percentage:.2f}%)")
+        logger.info(f"SMTP Server: {self.smtp_server}:{self.smtp_port}")
 
         msg = self._build_message(recipient_email, name, role, match_percentage)
 
-        # --- Use STARTTLS on port 587 (most reliable) ---
+        server = None
         try:
-            success = self._try_send_starttls(recipient_email, msg)
-            if success:
-                logger.info(f"✅ Email delivered (STARTTLS/587) to {recipient_email}")
-                return True
-            return False
-        except smtplib.SMTPAuthenticationError as auth_err:
-            logger.error(
-                f"❌ SMTP Authentication failed: {auth_err}\n"
-                "SOLUTION:\n"
-                "  For Office 365: The password may be incorrect or SMTP AUTH not enabled\n"
-                "    1. Verify your password is correct\n"
-                "    2. Go to Microsoft 365 Admin Centre\n"
-                "    3. Users → Active Users → select your mailbox\n"
-                "    4. Mail → 'Manage email apps' → enable 'Authenticated SMTP'\n"
-                "  For Gmail: Use App Password (not regular password)\n"
-                "    1. Enable 2FA: https://myaccount.google.com/security\n"
-                "    2. Generate App Password: https://myaccount.google.com/apppasswords\n"
-                "    3. Use the 16-character password in SENDER_PASSWORD"
-            )
-            return False
-        except smtplib.SMTPRecipientsRefused as e:
-            logger.error(f"❌ Recipient refused by server: {e}")
+            # Connect to SMTP server
+            logger.info(f"Connecting to {self.smtp_server}:{self.smtp_port}...")
+            server = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30)
+            server.set_debuglevel(1)  # Enable debug output
+            
+            # Start TLS encryption
+            logger.info("Starting TLS...")
+            server.starttls()
+            
+            # Login
+            logger.info(f"Logging in as {self.sender_email}...")
+            server.login(self.sender_email, self.sender_password)
+            
+            # Send email
+            logger.info(f"Sending email to {recipient_email}...")
+            server.send_message(msg)
+            
+            logger.info(f"✅ Email successfully sent to {recipient_email}")
+            return True
+
+        except smtplib.SMTPAuthenticationError as e:
+            logger.error(f"❌ Authentication failed: {e}")
+            logger.error("Check your email and password in .env file")
             return False
         except smtplib.SMTPException as e:
-            logger.error(f"❌ SMTP error: {type(e).__name__}: {e}")
-            return False
-        except TimeoutError:
-            logger.error(f"❌ Connection to {self.smtp_server} timed out (30s). Check firewall/network.")
+            logger.error(f"❌ SMTP error: {e}")
             return False
         except Exception as e:
-            logger.error(f"❌ Unexpected error: {type(e).__name__}: {e}")
+            logger.error(f"❌ Error sending email: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
+        finally:
+            if server:
+                try:
+                    server.quit()
+                except Exception:
+                    pass

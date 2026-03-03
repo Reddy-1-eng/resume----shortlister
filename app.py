@@ -57,26 +57,25 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs('logs', exist_ok=True)
 os.makedirs('results', exist_ok=True)
 
-# Initialize EmailSender with environment variables or config
+# Initialize EmailSender - try real SMTP first, fallback to mock if it fails
 try:
     email_sender = EmailSender(
         smtp_server=os.environ.get('SMTP_SERVER', 'smtp.office365.com'),
         smtp_port=int(os.environ.get('SMTP_PORT', '587')),
-        sender_email=os.environ.get('SENDER_EMAIL', 'your-email@woxsen.edu.in'),
-        sender_password=os.environ.get('SENDER_PASSWORD', 'your-password')
+        sender_email=os.environ.get('SENDER_EMAIL', 'donthu.reddykrishna_2027@woxsen.edu.in'),
+        sender_password=os.environ.get('SENDER_PASSWORD', 'Bbaoutgate@2024')
     )
-    logger.info("✅ EmailSender initialized with real SMTP")
+    logger.info("✅ EmailSender initialized with SMTP")
 except Exception as e:
     logger.warning(f"Could not initialize EmailSender: {e}")
-    # Fallback to mock email sender
     from email_sender_mock import MockEmailSender
     email_sender = MockEmailSender(
         smtp_server=os.environ.get('SMTP_SERVER', 'smtp.office365.com'),
         smtp_port=int(os.environ.get('SMTP_PORT', '587')),
-        sender_email=os.environ.get('SENDER_EMAIL', 'your-email@woxsen.edu.in'),
-        sender_password=os.environ.get('SENDER_PASSWORD', 'your-password')
+        sender_email=os.environ.get('SENDER_EMAIL', 'donthu.reddykrishna_2027@woxsen.edu.in'),
+        sender_password=os.environ.get('SENDER_PASSWORD', 'Bbaoutgate@2024')
     )
-    logger.info("⚠️  Using MockEmailSender (emails will be logged, not sent)")
+    logger.info("⚠️  Using MockEmailSender (emails logged to logs/emails_sent.log)")
 
 # Initialize resume processor if available
 resume_processor = None
@@ -221,19 +220,32 @@ def process_resumes():
                     logger.info("MOCK process_resume called")
                 
                 # Extract scores from result
-                overall = result.get('overall_score', 0) if CORE_AVAILABLE else result['scores']['overall']
-                
-                candidate = {
-                    'name': result.get('ner_data', {}).get('name', 'Unknown') if CORE_AVAILABLE else result['name'],
-                    'email': result.get('ner_data', {}).get('email', '') if CORE_AVAILABLE else result['email'],
-                    'overall': overall,
-                    'tech': result.get('technical_score', 0) if CORE_AVAILABLE else result['scores']['tech'],
-                    'exp': result.get('experience_score', 0) if CORE_AVAILABLE else result['scores']['exp'],
-                    'edu': result.get('education_score', 0) if CORE_AVAILABLE else result['scores']['edu'],
-                    'soft': result.get('soft_skills_score', 0) if CORE_AVAILABLE else result['scores']['soft'],
-                    'rec': result.get('recommendation', '') if CORE_AVAILABLE else result['scores']['rec'],
-                    'file_path': file_path
-                }
+                if CORE_AVAILABLE:
+                    overall = float(result.get('overall_score', 0))
+                    candidate = {
+                        'name': result.get('ner_data', {}).get('name', 'Unknown'),
+                        'email': result.get('ner_data', {}).get('email', ''),
+                        'overall': overall,
+                        'tech': float(result.get('technical_score', 0)),
+                        'exp': float(result.get('experience_score', 0)),
+                        'edu': float(result.get('education_score', 0)),
+                        'soft': float(result.get('soft_skills_score', 0)),
+                        'rec': result.get('recommendation', 'MAYBE'),
+                        'file_path': file_path
+                    }
+                else:
+                    overall = result['scores']['overall']
+                    candidate = {
+                        'name': result['name'],
+                        'email': result['email'],
+                        'overall': overall,
+                        'tech': result['scores']['tech'],
+                        'exp': result['scores']['exp'],
+                        'edu': result['scores']['edu'],
+                        'soft': result['scores']['soft'],
+                        'rec': result.get('recommendation', 'MAYBE'),
+                        'file_path': file_path
+                    }
                 candidates.append(candidate)
             except Exception as e:
                 logger.error(f"Error processing {filename}: {e}")
@@ -490,4 +502,4 @@ if __name__ == '__main__':
     print(f"🔧 Core processing: {'Available' if CORE_AVAILABLE else 'Mock mode'}")
     print("=" * 60)
     
-    app.run(debug=True, host='0.0.0.0', port=5000) 
+    app.run(debug=True, host='0.0.0.0', port=5000, threaded=True) 

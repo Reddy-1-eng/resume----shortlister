@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Get credentials
+# Get credentials from .env
 smtp_server = os.getenv('SMTP_SERVER', 'smtp.office365.com')
 smtp_port = int(os.getenv('SMTP_PORT', '587'))
 sender_email = os.getenv('SENDER_EMAIL')
@@ -31,7 +31,7 @@ email_sender = EmailSender(
 )
 
 # Test email
-test_recipient = "donthu.reddykrishna_2027@woxsen.edu.in"
+test_recipient = sender_email  # Send to yourself
 print(f"Sending test email to: {test_recipient}")
 print()
 
