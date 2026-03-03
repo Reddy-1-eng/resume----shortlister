@@ -92,6 +92,7 @@ class EmailSender:
 
         recipient_email = str(recipient_email).strip()
         logger.info(f"Sending shortlist email to: {recipient_email} (role={role}, score={match_percentage:.2f}%)")
+        logger.info(f"Using SMTP: {self.smtp_server}:{self.smtp_port} from {self.sender_email}")
 
         msg = self._build_message(recipient_email, name, role, match_percentage)
 
@@ -99,14 +100,18 @@ class EmailSender:
         try:
             success = self._try_send_ssl(recipient_email, msg)
             if success:
-                logger.info(f"Email delivered (SSL/465) to {recipient_email}")
+                logger.info(f"✅ Email delivered (SSL/465) to {recipient_email}")
                 return True
-        except smtplib.SMTPAuthenticationError:
+        except smtplib.SMTPAuthenticationError as auth_err:
             logger.error(
-                "SMTP Authentication failed on SSL/465. "
-                "Action required: In Microsoft 365 Admin Centre, go to "
-                "Users → Active Users → select the mailbox → Mail tab → "
-                "'Manage email apps' → enable 'Authenticated SMTP (SMTP AUTH)'."
+                f"❌ SMTP Authentication failed on SSL/465: {auth_err}\n"
+                "SOLUTION:\n"
+                "  For Gmail: Use App Password (not regular password)\n"
+                "    1. Enable 2FA: https://myaccount.google.com/security\n"
+                "    2. Generate App Password: https://myaccount.google.com/apppasswords\n"
+                "    3. Use the 16-character password in SENDER_PASSWORD\n"
+                "  For Office 365: Enable SMTP AUTH in Microsoft 365 Admin Centre\n"
+                "    Users → Active Users → select mailbox → Mail → 'Manage email apps' → enable 'Authenticated SMTP'"
             )
             return False
         except Exception as e1:
@@ -116,25 +121,30 @@ class EmailSender:
         try:
             success = self._try_send_starttls(recipient_email, msg)
             if success:
-                logger.info(f"Email delivered (STARTTLS/587) to {recipient_email}")
+                logger.info(f"✅ Email delivered (STARTTLS/587) to {recipient_email}")
                 return True
             return False
-        except smtplib.SMTPAuthenticationError:
+        except smtplib.SMTPAuthenticationError as auth_err:
             logger.error(
-                "SMTP Authentication failed on STARTTLS/587. "
-                "SMTP AUTH may be disabled for this mailbox in Microsoft 365. "
-                "Enable it via M365 Admin Centre or use an App Password."
+                f"❌ SMTP Authentication failed on STARTTLS/587: {auth_err}\n"
+                "SOLUTION:\n"
+                "  For Gmail: Use App Password (not regular password)\n"
+                "    1. Enable 2FA: https://myaccount.google.com/security\n"
+                "    2. Generate App Password: https://myaccount.google.com/apppasswords\n"
+                "    3. Use the 16-character password in SENDER_PASSWORD\n"
+                "  For Office 365: Enable SMTP AUTH in Microsoft 365 Admin Centre or use App Password\n"
+                "  Check your email provider's SMTP settings and authentication requirements"
             )
             return False
         except smtplib.SMTPRecipientsRefused as e:
-            logger.error(f"Recipient refused by server: {e}")
+            logger.error(f"❌ Recipient refused by server: {e}")
             return False
         except smtplib.SMTPException as e:
-            logger.error(f"SMTP error: {type(e).__name__}: {e}")
+            logger.error(f"❌ SMTP error: {type(e).__name__}: {e}")
             return False
         except TimeoutError:
-            logger.error(f"Connection to {self.smtp_server} timed out (30s).")
+            logger.error(f"❌ Connection to {self.smtp_server} timed out (30s). Check firewall/network.")
             return False
         except Exception as e:
-            logger.error(f"Unexpected error: {type(e).__name__}: {e}")
+            logger.error(f"❌ Unexpected error: {type(e).__name__}: {e}")
             return False

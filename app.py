@@ -8,6 +8,16 @@ import pandas as pd
 from email_sender import EmailSender      # Email sending logic
 import traceback
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ Loaded environment variables from .env file")
+except ImportError:
+    print("⚠️  python-dotenv not installed. Install with: pip install python-dotenv")
+except Exception as e:
+    print(f"⚠️  Could not load .env file: {e}")
+
 # Ensure directories exist early
 os.makedirs('logs', exist_ok=True)
 
@@ -45,12 +55,12 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs('logs', exist_ok=True)
 os.makedirs('results', exist_ok=True)
 
-# Initialize EmailSender
+# Initialize EmailSender with environment variables or config
 email_sender = EmailSender(
-    smtp_server="smtp.office365.com",
-    smtp_port=587,
-    sender_email="bbaweekdayoutgatepermission@woxsen.edu.in",
-    sender_password="Bbaoutgate@2024"
+    smtp_server=os.environ.get('SMTP_SERVER', 'smtp.gmail.com'),
+    smtp_port=int(os.environ.get('SMTP_PORT', '587')),
+    sender_email=os.environ.get('SENDER_EMAIL', 'your-email@gmail.com'),
+    sender_password=os.environ.get('SENDER_PASSWORD', 'your-app-password')
 )
 
 # Initialize resume processor if available
