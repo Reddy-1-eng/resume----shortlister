@@ -7,6 +7,8 @@ from werkzeug.utils import secure_filename
 import pandas as pd
 from email_sender import EmailSender      # Email sending logic
 import traceback
+import random
+import time
 
 # Load environment variables from .env file
 try:
@@ -93,14 +95,15 @@ def get_job_descriptions():
 def mock_process_resume(file_path, job_role):
     """Mock resume processing for testing"""
     import random
+    import time
     
     # Simulate processing time
-    import time
     time.sleep(0.5)
     
     # Generate mock scores
+    overall = random.randint(60, 95)
     scores = {
-        'overall': random.randint(60, 95),
+        'overall': overall,
         'tech': random.randint(50, 90),
         'exp': random.randint(40, 85),
         'edu': random.randint(60, 95),
@@ -118,6 +121,17 @@ def mock_process_resume(file_path, job_role):
     return {
         'name': name,
         'email': email,
+        'overall_score': overall,
+        'technical_score': scores['tech'],
+        'experience_score': scores['exp'],
+        'education_score': scores['edu'],
+        'soft_skills_score': scores['soft'],
+        'recommendation': 'RECOMMEND' if overall >= 75 else 'MAYBE' if overall >= 50 else 'REJECT',
+        'ner_data': {
+            'name': name,
+            'email': email,
+            'phone': 'N/A'
+        },
         'scores': scores,
         'file_path': file_path
     }
@@ -188,12 +202,14 @@ def process_resumes():
             try:
                 if CORE_AVAILABLE:
                     result = process_uploaded_resume(file_path, job_role, threshold)
-                    print("REAL process_uploaded_resume called")
-                    print(result)
+                    logger.info("REAL process_uploaded_resume called")
                 else:
                     result = mock_process_resume(file_path, job_role)
-                    print("MOCK process_resume called")
+                    logger.info("MOCK process_resume called")
+                
+                # Extract scores from result
                 overall = result.get('overall_score', 0) if CORE_AVAILABLE else result['scores']['overall']
+                
                 candidate = {
                     'name': result.get('ner_data', {}).get('name', 'Unknown') if CORE_AVAILABLE else result['name'],
                     'email': result.get('ner_data', {}).get('email', '') if CORE_AVAILABLE else result['email'],
@@ -208,6 +224,7 @@ def process_resumes():
                 candidates.append(candidate)
             except Exception as e:
                 logger.error(f"Error processing {filename}: {e}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
                 continue
 
         # Only proceed if there are candidates
@@ -234,7 +251,8 @@ def process_resumes():
         })
     except Exception as e:
         logger.error(f"Processing error: {e}")
-        return jsonify({'success': False, 'error': 'Processing failed'})
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({'success': False, 'error': f'Processing failed: {str(e)}'})
 
 @app.route('/test-email', methods=['POST'])
 def test_email():
