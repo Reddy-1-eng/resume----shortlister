@@ -62,7 +62,7 @@ try:
     email_sender = EmailSender(
         smtp_server=os.environ.get('SMTP_SERVER', 'smtp.office365.com'),
         smtp_port=int(os.environ.get('SMTP_PORT', '587')),
-        sender_email=os.environ.get('SENDER_EMAIL', 'donthu.reddykrishna_2027@woxsen.edu.in'),
+        sender_email=os.environ.get('SENDER_EMAIL', 'bbaweekdayoutgatepermission@woxsen.edu.in'),
         sender_password=os.environ.get('SENDER_PASSWORD', 'Bbaoutgate@2024')
     )
     logger.info("✅ EmailSender initialized with SMTP")
@@ -72,7 +72,7 @@ except Exception as e:
     email_sender = MockEmailSender(
         smtp_server=os.environ.get('SMTP_SERVER', 'smtp.office365.com'),
         smtp_port=int(os.environ.get('SMTP_PORT', '587')),
-        sender_email=os.environ.get('SENDER_EMAIL', 'donthu.reddykrishna_2027@woxsen.edu.in'),
+        sender_email=os.environ.get('SENDER_EMAIL', 'bbaweekdayoutgatepermission@woxsen.edu.in'),
         sender_password=os.environ.get('SENDER_PASSWORD', 'Bbaoutgate@2024')
     )
     logger.info("⚠️  Using MockEmailSender (emails logged to logs/emails_sent.log)")
