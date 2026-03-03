@@ -2,6 +2,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
+import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -9,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 class EmailSender:
     """
-    Sends emails via Office 365.
-    Tries port 465 (SSL) first, falls back to port 587 (STARTTLS).
+    Sends emails via Office 365 or Gmail.
+    Uses STARTTLS/587 for compatibility.
     """
 
     def __init__(self, smtp_server, smtp_port, sender_email, sender_password):
@@ -91,12 +92,15 @@ class EmailSender:
             logger.error(
                 f"❌ SMTP Authentication failed: {auth_err}\n"
                 "SOLUTION:\n"
+                "  For Office 365: The password may be incorrect or SMTP AUTH not enabled\n"
+                "    1. Verify your password is correct\n"
+                "    2. Go to Microsoft 365 Admin Centre\n"
+                "    3. Users → Active Users → select your mailbox\n"
+                "    4. Mail → 'Manage email apps' → enable 'Authenticated SMTP'\n"
                 "  For Gmail: Use App Password (not regular password)\n"
                 "    1. Enable 2FA: https://myaccount.google.com/security\n"
                 "    2. Generate App Password: https://myaccount.google.com/apppasswords\n"
-                "    3. Use the 16-character password in SENDER_PASSWORD\n"
-                "  For Office 365: Enable SMTP AUTH in Microsoft 365 Admin Centre\n"
-                "    Users → Active Users → select mailbox → Mail → 'Manage email apps' → enable 'Authenticated SMTP'"
+                "    3. Use the 16-character password in SENDER_PASSWORD"
             )
             return False
         except smtplib.SMTPRecipientsRefused as e:

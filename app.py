@@ -58,12 +58,25 @@ os.makedirs('logs', exist_ok=True)
 os.makedirs('results', exist_ok=True)
 
 # Initialize EmailSender with environment variables or config
-email_sender = EmailSender(
-    smtp_server=os.environ.get('SMTP_SERVER', 'smtp.gmail.com'),
-    smtp_port=int(os.environ.get('SMTP_PORT', '587')),
-    sender_email=os.environ.get('SENDER_EMAIL', 'your-email@gmail.com'),
-    sender_password=os.environ.get('SENDER_PASSWORD', 'your-app-password')
-)
+try:
+    email_sender = EmailSender(
+        smtp_server=os.environ.get('SMTP_SERVER', 'smtp.office365.com'),
+        smtp_port=int(os.environ.get('SMTP_PORT', '587')),
+        sender_email=os.environ.get('SENDER_EMAIL', 'your-email@woxsen.edu.in'),
+        sender_password=os.environ.get('SENDER_PASSWORD', 'your-password')
+    )
+    logger.info("✅ EmailSender initialized with real SMTP")
+except Exception as e:
+    logger.warning(f"Could not initialize EmailSender: {e}")
+    # Fallback to mock email sender
+    from email_sender_mock import MockEmailSender
+    email_sender = MockEmailSender(
+        smtp_server=os.environ.get('SMTP_SERVER', 'smtp.office365.com'),
+        smtp_port=int(os.environ.get('SMTP_PORT', '587')),
+        sender_email=os.environ.get('SENDER_EMAIL', 'your-email@woxsen.edu.in'),
+        sender_password=os.environ.get('SENDER_PASSWORD', 'your-password')
+    )
+    logger.info("⚠️  Using MockEmailSender (emails will be logged, not sent)")
 
 # Initialize resume processor if available
 resume_processor = None
